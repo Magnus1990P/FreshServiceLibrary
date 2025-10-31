@@ -1,0 +1,46 @@
+{
+    "DEFAULT": {
+        "email": "",
+	    "subject": "Ticket Generated from FreshServiceClient python library",
+        "source": 9,
+        "priority": 1,
+        "urgency": 1,
+        "impact": 1,
+        "status": 2,
+        "cc_emails": [],
+        "workspace_id": 0,
+        "department_id": 0,
+        "group_id": 0,
+        "category": "",
+        "description": ""
+    },
+    "CTI": {
+        "subject": "Cyber Threat Intelligence",
+        "urgency": 2,
+        "impact": 2,
+        "category": "CyberSecurity",
+        "sub_category": "ThreatIntel"
+    },
+    "CREDS": {
+        "subject": "[TLP:AMBER+STRICT] User information leaked",
+        "urgency": 3,
+        "impact": 3,
+        "category": "BreachMonitoring"
+    },
+    "ADVISORY": {
+        "subject": "Security Advisory",
+        "category": "Surveilance",
+        "sub_category": "",
+        "tags": ["security advisory", "vulnerbility"]
+    },
+    "FINDING-HIGH": {
+	    "subject": "[TLP:AMBER] A HIGH severity security vulnerability was found",
+        "category": "Surveilance",
+        "priority": 3,
+        "urgency": 3,
+        "impact": 2,
+        "sub_category": "",
+        "tags": ["security advisory", "vulnerbility"]
+    }
+}
+
