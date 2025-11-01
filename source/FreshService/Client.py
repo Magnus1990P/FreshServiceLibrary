@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 from os.path import exists, isfile
 from FreshService.Config import Settings
 from typing import List, Dict
-
+import threading
 
 
 class FreshService(BaseSettings):
@@ -36,16 +36,34 @@ class FreshService(BaseSettings):
                 print(f"\tFetched {len(return_data)} {extract_field}")
                 sys.stdout.write(".")
                 sys.stdout.flush()
-            try:
-                resp = get(f"{url}?per_page=100&page={page_number}",
-                        headers=cls.FRESH_HEADER, 
-                        auth=(cls.settings.FRESH_KEY, "X"), 
-                        timeout=cls.settings.MAX_REQUEST_TIMEOUT )
-            except Exception as e:
-                print(f"\nFailed to retrieve API: {url}\n{e}")
-                return return_data
+            for i in range(1, cls.settings.MAX_REQUEST_RETRIES+1):
+                try:
+                    resp = get(f"{url}?per_page={cls.settings.FRESH_PAGE_SIZE}&page={page_number}",
+                            headers = cls.FRESH_HEADER, 
+                            auth = (cls.settings.FRESH_KEY, "X"), 
+                            timeout = cls.settings.MAX_REQUEST_TIMEOUT )
+                    if resp.status_code == 200:
+                        break
+                    elif resp.status_code == 404:
+                        break
+                    elif resp.status_code == 429:
+                        if cls.settings.VERBOSE:
+                            print("HTTP-429 - Waiting:", resp.headers["retry-after"])
+                        sleep_time = int(resp.headers["retry-after"])
+                        sleep(sleep_time)
+                    else:
+                        if cls.settings.VERBOSE:
+                            print(f"Failed to retrieve API {i}/{cls.settings.MAX_REQUEST_RETRIES}: {resp.status_code} - {url}")
+                            print(resp.content)
+                        sleep(1)
+                except Exception as e:
+                    if cls.settings.VERBOSE:
+                        print(f"Failed to retrieve API: {url}\n{e}")
+                    sleep(1)
             if resp.status_code != 200:
-                print(f"\nTickets was not found.\nRequest returned HTTP-{resp.status_code}")
+                if cls.settings.VERBOSE:
+                    print(f"API request was not found.  Request returned HTTP-{resp.status_code}")
+                    print(resp.url)
                 return return_data
             else:
                 data = resp.json()
@@ -57,14 +75,25 @@ class FreshService(BaseSettings):
     def __get_api(cls, url, extract_field):
         for i in range(1, cls.settings.MAX_REQUEST_RETRIES+1):
             try:
-                data = get(url, 
+                resp = get(url, 
                            headers=cls.FRESH_HEADER, 
                            auth=(cls.settings.FRESH_KEY, "X"),
                            timeout=cls.settings.MAX_REQUEST_TIMEOUT)
-                return data.json()[extract_field]
+                if resp.status_code == 200:
+                    return resp.json()[extract_field]
+                elif resp.status_code == 404:
+                    break
+                elif resp.status_code == 429:
+                    if cls.settings.VERBOSE:
+                        print("HTTP-429 - Waiting:", resp.headers["retry-after"])
+                    sleep_time = int(resp.headers["retry-after"])
+                    sleep(sleep_time)
+                else:
+                    sleep(1)
             except Exception as e:
-                print(f"Failed to retrieve APIi {i}/{cls.settings.MAX_REQUEST_RETRIES}: {url}\n{e}")
-                sleep(2)
+                print(f"Failed to retrieve API {i}/{cls.settings.MAX_REQUEST_RETRIES}: {url}")
+                print(e)
+                sleep(1)
         return {}
 
 
@@ -76,26 +105,40 @@ class FreshService(BaseSettings):
         if resp.status_code != 201:
             print(f"Ticket was not created.\nResponse code {resp.status_code},\nmessage: {resp.json()}")
         else:
-            print(f"Ticket successfully created")
-            print(resp.json())
+            response = resp.json()
+            print(f"Ticket successfully created - {response['ticket']['id']} - {response['ticket']['subject']}")
+            
 
     
-    def __delete_software(cls, software_id_list:list[int]=[]):
-        for software_id in software_id_list:
-            count = len(cls.SoftwareRegister[software_id]["users"]) + len(cls.SoftwareRegister[software_id]["installs"]) + len(cls.SoftwareRegister[software_id]["licenses"])
-            if count > 0:
-                continue
-            resp = delete(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/applications/{software_id}",
-                          headers=cls.settings.FRESH_HEADER,
-                          auth=(cls.settings.FRESH_KEY, "X"),
-                          timeout=5)
-            if resp.status_code != 204:
-                print(f"Could not delete: {cls.VendorRegister[cls.SoftwareRegister[software_id]['publisher_id']]['name']} - {cls.SoftwareRegister[software_id]['name']}")
-                return False
-            else:
-                print(f"Deleted: {cls.VendorRegister[cls.SoftwareRegister[software_id]['publisher_id']]['name']} - {cls.SoftwareRegister[software_id]['name']}")
-        return True
+    def __delete_software(cls, software_id:str):
+        resp = delete(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/applications/{software_id}",
+                        headers=cls.FRESH_HEADER,
+                        auth=(cls.settings.FRESH_KEY, "X"),
+                        timeout=5)
+        if resp.status_code == 204:
+            return True
+        return False
 
+
+    def wipe_software(cls):
+        deleted_softwares = []
+        for software_id in cls.SoftwareRegister:
+            count =  len(cls.SoftwareRegister[software_id]["users"])
+            count += len(cls.SoftwareRegister[software_id]["installs"])
+            count += len(cls.SoftwareRegister[software_id]["licenses"])
+            if count > 0:
+                state = False
+            else:
+                state = cls.__delete_software(software_id)
+            if state:
+                print(f"Successfully deleted: {software_id} - {cls.SoftwareRegister[software_id]['name']}")
+                deleted_softwares.append(software_id)
+            else:
+                print(f"Failed to deleted: {software_id} with {count} relations")
+        
+        for software_id in deleted_softwares:
+            software = cls.SoftwareRegister.pop(software_id)
+        cls.__save_cache("SOFTWARE")
 
     def __load_cache(cls, CACHE_TYPE:str):
         if CACHE_TYPE not in cls.ENUM_CACHE:
@@ -120,9 +163,9 @@ class FreshService(BaseSettings):
         try:
             with open(cls.ENUM_CACHE[CACHE_TYPE], "w") as cache_fh:
                 if CACHE_TYPE == "VENDOR":
-                    json.dump(cls.VendorRegister, cache_fh)
+                    json.dump(cls.VendorRegister, cache_fh, indent=2)
                 elif CACHE_TYPE == "SOFTWARE":
-                    json.dump(cls.SoftwareRegister, cache_fh)
+                    json.dump(cls.SoftwareRegister, cache_fh, indent=2)
                 return True
         except Exception as e:
             print(e)
@@ -138,7 +181,7 @@ class FreshService(BaseSettings):
             cls.VendorRegister.update({"UNREGISTERED": {"name": "UNREGISTERED", "software":[]}})
             vendor_list = cls.__get_paginated_api(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/vendors", "vendors")
             for vendor in vendor_list:
-                cls.VendorRegister.update({vendor["id"]: {"name": vendor["name"], "software":[]}})
+                cls.VendorRegister.update({str(vendor["id"]): {"name": vendor["name"], "software":[]}})
             cls.__save_cache("VENDOR")
 
 
@@ -164,66 +207,146 @@ class FreshService(BaseSettings):
                                                 "installs": [],
                                                 "licenses": []}
                                             })
+            cls.expand_software()
             cls.__save_cache("SOFTWARE")
+
         for software_id, software in cls.SoftwareRegister.items():
             cls.VendorRegister[software["publisher_id"]]["software"].append(software_id)
 
-
-    def get_software_users(cls, software_id_list:list[str]=[]):
-        print("Expanding applications w/users")
-        for software_id in software_id_list:
-            data = cls.__get_paginated_api(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/applications/{software_id}/users/e", "application_users")
-            cls.SoftwareRegister[software_id] = [{"user": app["user_id"],
-                                                "license": app["license_id"],
-                                                "state": app["state"], 
-                                                "last_use": app["last_used"]} for app in data]
-
-
-    def get_software_licenses(cls, software_id_list:list[str]=[]):
-        print("Expanding applications w/users")
-        for software_id in software_id_list:
-            data = cls.__get_paginated_api(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/applications/{software_id}/licenses", "licenses")
-            cls.SoftwareRegister[software_id]["licenses"] = [{"license": app["id"], "contract_id": app["contract_id"]} for app in data]
+    
+    def __get_software_users(cls, software_id):
+        if cls.settings.VERBOSE:
+            print(f"Expanding application {software_id} w/users")
+        data = cls.__get_paginated_api(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/applications/{software_id}/users/", "application_users")
+        cls.SoftwareRegister[software_id]["users"] = [{"user": app["user_id"],
+                                            "license": app["license_id"],
+                                            "state": app["state"], 
+                                            "last_use": app["last_used"]} for app in data]
 
 
-    def get_software_installs(cls, software_id_list:list[str]=[]):
-        print("Expanding applications w/users")
-        for software_id in software_id_list:
-            data = cls.__get_paginated_api(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/applications/{software_id}/installations/", "installations")
-            for app in data:
-                asset_info = cls.__get_api(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/assets/{app['installation_machine_id']}?include=type_fields", "asset")
-                lcl_description = None
-                if asset_info and "description" in asset_info and asset_info["description"]:
-                    lcl_description = BeautifulSoup(asset_info["description"], "lxml").text.replace("\n", "  |  ").strip()
-                lcl_asset_info = None
-                if asset_info and "asset_state_11000765764" in asset_info["type_fields"]:
-                    lcl_asset_info = asset_info["type_fields"]["asset_state_11000765764"]
-                cls.SoftwareRegister[software_id]["installs"].append({"path": app["installation_path"],
-                                                        "version": app["version"], 
-                                                        "user": app["user_id"],
-                                                        "name": asset_info["name"] if asset_info else None,
-                                                        "description": lcl_description,
-                                                        "status": lcl_asset_info,
-                                                        "machine": app["installation_machine_id"]
-                                                    })
+    def __get_software_licenses(cls, software_id):
+        if cls.settings.VERBOSE:
+            print("Expanding applications w/licenses")
+        data = cls.__get_paginated_api(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/applications/{software_id}/licenses", "licenses")
+        cls.SoftwareRegister[software_id]["licenses"] = [{"license": app["id"], "contract_id": app["contract_id"]} for app in data]
 
 
-    def list_software(cls, vendor_id_list:List[str]=[], software_id_list:List[str]=[]):
-        if not vendor_id_list and not software_id_list:
-            for vendor_id, vendor in cls.VendorRegister.items():
-                print(f"{vendor_id} - {vendor['name']}")
-                for software_id in vendor['software']:
-                    print(f"\t{software_id} - {cls.SoftwareRegister[software_id]['name']}")        
-        elif vendor_id_list:
+    def __get_software_installs(cls, software_id):
+        if cls.settings.VERBOSE:
+            print("Expanding applications w/installations")
+        data = cls.__get_paginated_api(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/applications/{software_id}/installations/", "installations")
+        for app in data:
+            asset_info = cls.__get_api(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/assets/{app['installation_machine_id']}?include=type_fields", "asset")
+            lcl_description = None
+            if asset_info and "description" in asset_info and asset_info["description"]:
+                lcl_description = BeautifulSoup(asset_info["description"], "lxml").text.replace("\n", "  |  ").strip()
+            lcl_asset_info = None
+            if asset_info and "asset_state_11000765764" in asset_info["type_fields"]:
+                lcl_asset_info = asset_info["type_fields"]["asset_state_11000765764"]
+            cls.SoftwareRegister[software_id]["installs"].append({  "path": app["installation_path"],
+                                                                    "version": app["version"], 
+                                                                    "user": app["user_id"],
+                                                                    "name": asset_info["name"] if asset_info else None,
+                                                                    "description": lcl_description,
+                                                                    "status": lcl_asset_info,
+                                                                    "machine": app["installation_machine_id"]
+                                                                })
+
+
+    def __expand_software(cls, software_id):
+        cls.__get_software_users(software_id)
+        cls.__get_software_licenses(software_id)
+        cls.__get_software_installs(software_id)
+        users = len(cls.SoftwareRegister[software_id]['users'])
+        installs = len(cls.SoftwareRegister[software_id]['installs'])
+        licenses = len(cls.SoftwareRegister[software_id]['licenses'])
+        print(f"Finished expanding: {software_id} {cls.SoftwareRegister[software_id]['name']} - {users}, {installs}, {licenses}")
+
+
+    def expand_software(cls):
+        print("Expanding software")
+        threads = []
+        for software_id in cls.SoftwareRegister.keys():
+            thread = threading.Thread(target=cls.__expand_software, args=(software_id,))
+            threads.append(thread)
+        started_threads = []
+        for thread in threads:
+            while threading.active_count() >= 10:
+                sleep(1)
+            thread.start()
+            started_threads.append(thread)
+        for thread in threads:
+            thread.join()
+        cls.__save_cache("SOFTWARE")
+
+
+    def list_software(cls, vendor_id_list:List[str]=[], software_id_list:List[str]=[], write:bool=False):
+        string_builder = []
+        if software_id_list and not vendor_id_list:
+            for software_id in software_id_list:
+                pid = cls.SoftwareRegister[software_id]['publisher_id']
+                pname = cls.VendorRegister[cls.SoftwareRegister[software_id]['publisher_id']]['name']
+                print(f"{pid} - {pname} - {software_id} - {cls.SoftwareRegister[software_id]['name']}")
+                string_builder.append(f"- {pid} - {pname} - {software_id} - {cls.SoftwareRegister[software_id]['name']}")
+        
+        else:
+            if not vendor_id_list:
+                vendor_id_list = cls.VendorRegister.keys()
             for vendor_id in vendor_id_list:
-                print(f"{vendor_id} - {cls.VendorRegister[vendor_id]['name']}")
-                for software_id in cls.VendorRegister[vendor_id]['software']:
+                temp_string_builder = []
+                vendor = cls.VendorRegister[vendor_id]
+                if not vendor['software'] and not cls.settings.VERBOSE:
+                    continue
+                print(f"{vendor_id} - {vendor['name']}")
+                temp_string_builder.append(f"## {vendor_id} - {vendor['name']}\n")
+                for software_id in vendor['software']:
                     if software_id_list and software_id not in software_id_list:
                         continue
-                    print(f"\t{software_id} - {cls.SoftwareRegister[software_id]['name']}")
-        elif software_id_list:
-            for software_id in software_id_list:
-                print(f"{cls.SoftwareRegister[software_id]['publisher_id']} - {cls.VendorRegister[cls.SoftwareRegister[software_id]['publisher_id']]['name']} - {software_id} - {cls.SoftwareRegister[software_id]['name']}")
+                    software = cls.SoftwareRegister[software_id]
+                        
+                    if not cls.settings.VERBOSE and not software["users"] and not software["installs"] and not software["licenses"]:
+                        continue
+
+                    CONTENT_0 = False
+                    if software["installs"]:
+                        for version in set([install["version"] for install in software["installs"]]):
+                            CONTENT_1 = False
+                            for install in software["installs"]:
+                                if install["version"] != version:
+                                    continue
+                                if not cls.settings.VERBOSE and install["status"] != "In Use":
+                                    continue
+                                if CONTENT_0 == False:
+                                    CONTENT_0 = True
+                                    temp_string_builder.append(f"### {software_id} - {software['name']}")
+                                    print(f"\t{software_id} - {software['name']}")
+                                if CONTENT_1 == False:
+                                    CONTENT_1 = True
+                                    temp_string_builder.append(f"- v{version}")
+                                if install['description']:
+                                    temp_string_builder.append(f"""\t- `{install['status']}` {install['user']} @ {install['name']}  
+        {install['description']}""")
+                                else:
+                                    temp_string_builder.append(f"""\t- `{install['status']}` {install['user']} @ {install['name']}""")
+
+                    
+                    for user in software["users"]:
+                        print(user)
+                    for license in software["licenses"]:
+                        print(license)
+                    
+                if len(temp_string_builder) == 1:
+                    continue
+                temp_string_builder.append("")
+                temp_string_builder.append("______\n")
+                
+                string_builder.extend(temp_string_builder)
+
+        
+        if write:
+            with open("./message.md", "w") as file_handle:
+                file_handle.write("\n".join(string_builder))
+        return string_builder
 
 
     def filter_software(cls, filter_software:List[str]=[]):
@@ -262,7 +385,9 @@ class FreshService(BaseSettings):
             print(f"\t{template_key}: {cls.FRESH_TEMPLATES[template_key]['subject']}")
     
 
-    def generate_ticket(cls, subject: str, message: str, template_name:str = "DEFAULT"):
+    def generate_ticket(cls, message: str, subject:str=None, template_name:str="DEFAULT"):
+        if cls.settings.VERBOSE:
+            print("Creating ticket")
         cls.__load_templates()
 
         if template_name not in cls.FRESH_TEMPLATES:
@@ -271,6 +396,7 @@ class FreshService(BaseSettings):
             return
         
         ticket_object = cls.FRESH_TEMPLATES["DEFAULT"]
+        ticket_object["workspace_id"] = cls.settings.FRESH_WORKSPACE_ID
         ticket_object["email"] = cls.settings.FRESH_DEFAULT_CONTACT_EMAIL
         ticket_object["cc_emails"].append(cls.settings.FRESH_DEFAULT_CONTACT_EMAIL)
         ticket_object["department_id"] = cls.settings.FRESH_DEFAULT_DEPT_ID
@@ -291,7 +417,5 @@ class FreshService(BaseSettings):
         if not ticket_object["description"].strip():
             raise ValueError("Missing ticket content: description")
         
-        print(json.dumps(ticket_object, indent=2))
-
-        #cls.__create_new_ticket(ticket_object=ticket_object)
+        cls.__create_new_ticket(ticket_object=ticket_object)
         
