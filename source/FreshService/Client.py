@@ -281,7 +281,7 @@ class FreshService(BaseSettings):
         cls.__save_cache("SOFTWARE")
 
 
-    def list_software(cls, vendor_id_list:List[str]=[], software_id_list:List[str]=[], write:bool=False):
+    def list_software(cls, vendor_id_list:List[str]=[], software_id_list:List[str]=[], write:bool=False, show_usage:bool=False):
         string_builder = []
         if software_id_list and not vendor_id_list:
             for software_id in software_id_list:
@@ -326,21 +326,25 @@ class FreshService(BaseSettings):
                                 if CONTENT_1 == False:
                                     CONTENT_1 = True
                                     temp_string_builder.append(f"- v{version}")
-                                print(f"\t\t\tInstalled on {install['user']} @ {install['name']} [Device: {install['status']}]")
+                                if show_usage:
+                                    print(f"\t\t\tInstalled on {install['user']} @ {install['name']} [Device: {install['status']}]")
                                 if install['description']:
                                     temp_string_builder.append(f"""\t- Installed: {install['user']} @ {install['name']} [Device: {install['status']}]  
         {install['description']}""")
-                                    print(f"\t\t\t\t{install['description']}")
+                                    if show_usage:
+                                        print(f"\t\t\t\t{install['description']}")
                                 else:
                                     temp_string_builder.append(f"""\t- Installed: {install['user']} @ {install['name']} [Device: {install['status']}]""")
 
                     
                     for user in software["users"]:
                         temp_string_builder.append(f"\t- User: {user['user']} [State: {user['state']}] w/{user['license']} licenses - Last used: {'N/A' if not user['last_use'] else user['last_use']}")
-                        print(f"\t\t\tUser: {user['user']} [State: {user['state']}] w/{user['license']} licenses - Last used: {'N/A' if not user['last_use'] else user['last_use']}")
+                        if show_usage:
+                            print(f"\t\t\tUser: {user['user']} [State: {user['state']}] w/{user['license']} licenses - Last used: {'N/A' if not user['last_use'] else user['last_use']}")
                     for license in software["licenses"]:
                         temp_string_builder.append(f"\t- License: {license['license']} {license['contract_id']}")
-                        print(f"\t\t\tLicense: {license['license']} {license['contract_id']}")
+                        if show_usage:
+                            print(f"\t\t\tLicense: {license['license']} {license['contract_id']}")
 
                     
                 if len(temp_string_builder) == 1:
