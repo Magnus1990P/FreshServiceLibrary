@@ -111,10 +111,11 @@ class FreshService(BaseSettings):
 
     
     def __delete_software(cls, software_id:str):
-        resp = delete(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/applications/{software_id}",
-                        headers=cls.FRESH_HEADER,
-                        auth=(cls.settings.FRESH_KEY, "X"),
-                        timeout=5)
+        try:
+            resp = delete(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/applications/{software_id}",
+                            headers=cls.FRESH_HEADER, auth=(cls.settings.FRESH_KEY, "X"), timeout=5)
+        except TimeoutError:
+            return False
         if resp.status_code == 204:
             return True
         return False
@@ -135,10 +136,10 @@ class FreshService(BaseSettings):
                 deleted_softwares.append(software_id)
             else:
                 print(f"Failed to deleted: {software_id} with {count} relations")
-        
         for software_id in deleted_softwares:
             software = cls.SoftwareRegister.pop(software_id)
         cls.__save_cache("SOFTWARE")
+
 
     def __load_cache(cls, CACHE_TYPE:str):
         if CACHE_TYPE not in cls.ENUM_CACHE:
@@ -154,7 +155,7 @@ class FreshService(BaseSettings):
         except Exception as e:
             print(e)
         return {}
-            
+
 
     def __save_cache(cls, CACHE_TYPE):
         if CACHE_TYPE not in cls.ENUM_CACHE:
@@ -271,7 +272,7 @@ class FreshService(BaseSettings):
             threads.append(thread)
         started_threads = []
         for thread in threads:
-            while threading.active_count() >= 10:
+            while threading.active_count() >= 5:
                 sleep(1)
             thread.start()
             started_threads.append(thread)
@@ -307,9 +308,11 @@ class FreshService(BaseSettings):
                     if not cls.settings.VERBOSE and not software["users"] and not software["installs"] and not software["licenses"]:
                         continue
 
+                    print(f"\t{software_id} - {software['name']}")
                     CONTENT_0 = False
                     if software["installs"]:
                         for version in set([install["version"] for install in software["installs"]]):
+                            print(f"\t\t{software['name']} v{version}")
                             CONTENT_1 = False
                             for install in software["installs"]:
                                 if install["version"] != version:
@@ -319,21 +322,26 @@ class FreshService(BaseSettings):
                                 if CONTENT_0 == False:
                                     CONTENT_0 = True
                                     temp_string_builder.append(f"### {software_id} - {software['name']}")
-                                    print(f"\t{software_id} - {software['name']}")
+                                    
                                 if CONTENT_1 == False:
                                     CONTENT_1 = True
                                     temp_string_builder.append(f"- v{version}")
+                                print(f"\t\t\tInstalled on {install['user']} @ {install['name']} [Device: {install['status']}]")
                                 if install['description']:
-                                    temp_string_builder.append(f"""\t- `{install['status']}` {install['user']} @ {install['name']}  
+                                    temp_string_builder.append(f"""\t- Installed: {install['user']} @ {install['name']} [Device: {install['status']}]  
         {install['description']}""")
+                                    print(f"\t\t\t\t{install['description']}")
                                 else:
-                                    temp_string_builder.append(f"""\t- `{install['status']}` {install['user']} @ {install['name']}""")
+                                    temp_string_builder.append(f"""\t- Installed: {install['user']} @ {install['name']} [Device: {install['status']}]""")
 
                     
                     for user in software["users"]:
-                        print(user)
+                        temp_string_builder.append(f"\t- User: {user['user']} [State: {user['state']}] w/{user['license']} licenses - Last used: {'N/A' if not user['last_use'] else user['last_use']}")
+                        print(f"\t\t\tUser: {user['user']} [State: {user['state']}] w/{user['license']} licenses - Last used: {'N/A' if not user['last_use'] else user['last_use']}")
                     for license in software["licenses"]:
-                        print(license)
+                        temp_string_builder.append(f"\t- License: {license['license']} {license['contract_id']}")
+                        print(f"\t\t\tLicense: {license['license']} {license['contract_id']}")
+
                     
                 if len(temp_string_builder) == 1:
                     continue
