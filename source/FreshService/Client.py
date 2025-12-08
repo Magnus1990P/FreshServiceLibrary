@@ -6,19 +6,23 @@ from requests import get, post, put, delete
 import json
 import sys
 from time import sleep
-from bs4 import BeautifulSoup
 from os.path import exists, isfile
 from FreshService.Config import Settings
 from typing import List, Dict
 import threading
 
+from bs4 import BeautifulSoup, MarkupResemblesLocatorWarning
+import warnings
+
+warnings.filterwarnings("ignore", category=MarkupResemblesLocatorWarning)
+
 
 class FreshService(BaseSettings):
     settings: Settings = Settings()
-    ENUM_CACHE: Dict = {"VENDOR": "/tmp/freshservice_vendors.json",
-                        "SOFTWARE": "/tmp/freshservice_software.json"}
+    ENUM_CACHE: Dict = {"VENDOR": "./.freshservice_vendors.json",
+                        "SOFTWARE": "./.freshservice_software.json"}
     FRESH_HEADER: Dict = {"Content-Type": "application/json"}
-    FRESH_TEMPLATES: Dict = {}
+    FRESH_TEMPLATES: Dict = {}   
 
     VendorRegister: Dict = {}
     SoftwareRegister: Dict = {}
@@ -53,13 +57,18 @@ class FreshService(BaseSettings):
                         sleep(sleep_time)
                     else:
                         if cls.settings.VERBOSE:
-                            print(f"Failed to retrieve API {i}/{cls.settings.MAX_REQUEST_RETRIES}: {resp.status_code} - {url}")
+                            print(f"Failed to retrieve paginated API {i}/{cls.settings.MAX_REQUEST_RETRIES}: {resp.status_code} - {url}")
                             print(resp.content)
-                        sleep(1)
+                        sleep(3)
+                except NameResolutionError:
+                    if cls.settings.VERBOSE:
+                        print(f"Failed to retrieve paginated API: {url}\n{e}")
+                    sleep(5)
+
                 except Exception as e:
                     if cls.settings.VERBOSE:
-                        print(f"Failed to retrieve API: {url}\n{e}")
-                    sleep(1)
+                        print(f"Failed to retrieve paginated API: {url}\n{e}")
+                    sleep(5)
             if resp.status_code != 200:
                 if cls.settings.VERBOSE:
                     print(f"API request was not found.  Request returned HTTP-{resp.status_code}")
@@ -89,11 +98,11 @@ class FreshService(BaseSettings):
                     sleep_time = int(resp.headers["retry-after"])
                     sleep(sleep_time)
                 else:
-                    sleep(1)
+                    sleep(3)
             except Exception as e:
-                print(f"Failed to retrieve API {i}/{cls.settings.MAX_REQUEST_RETRIES}: {url}")
+                print(f"Failed to retrieve single API item {i}/{cls.settings.MAX_REQUEST_RETRIES}: {url}")
                 print(e)
-                sleep(1)
+                sleep(5)
         return {}
 
 
@@ -186,7 +195,7 @@ class FreshService(BaseSettings):
             cls.__save_cache("VENDOR")
 
 
-    def get_software(cls, vendor_id_list:list[str]=[], software_id_list:list[str]=[], update_cache:bool=False):
+    def get_software(cls, vendor_id_list:list[str]=[], software_filter:list[str]=[], update_cache:bool=False):
         print("Fetching: Applications")
         if not update_cache:
             cls.SoftwareRegister = cls.__load_cache(CACHE_TYPE="SOFTWARE")
@@ -195,23 +204,24 @@ class FreshService(BaseSettings):
             software_list = cls.__get_paginated_api(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/applications", "applications")
             for software in software_list:
                 software["id"] = str(software["id"])
-                if not software["publisher_id"]:
-                    software["publisher_id"] = "UNREGISTERED"
-                else:
-                    software["publisher_id"] = str(software["publisher_id"])
+                software["publisher_id"] = "UNREGISTERED" if not software["publisher_id"] else str(software["publisher_id"])
                 cls.SoftwareRegister.update({software["id"]:{
-                                                "name": software["name"],
-                                                "publisher_id": software["publisher_id"],
-                                                "category": software["category"], 
-                                                "status": software["status"],
-                                                "users": [],
-                                                "installs": [],
-                                                "licenses": []}
-                                            })
-            cls.expand_software()
+                                            "name": software["name"],
+                                            "publisher_id": software["publisher_id"],
+                                            "category": software["category"], 
+                                            "status": software["status"],
+                                            "users": [],
+                                            "installs": [],
+                                            "licenses": []}
+                                        })
+            cls.expand_software(vendor_id_list=vendor_id_list, software_filter=software_filter)
             cls.__save_cache("SOFTWARE")
+        elif vendor_id_list:
+            cls.expand_software(vendor_id_list=vendor_id_list, software_filter=software_filter)
 
         for software_id, software in cls.SoftwareRegister.items():
+            if software["publisher_id"] not in cls.VendorRegister:
+                software["publisher_id"] = "UNREGISTERED"
             cls.VendorRegister[software["publisher_id"]]["software"].append(software_id)
 
     
@@ -219,6 +229,7 @@ class FreshService(BaseSettings):
         if cls.settings.VERBOSE:
             print(f"Expanding application {software_id} w/users")
         data = cls.__get_paginated_api(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/applications/{software_id}/users/", "application_users")
+        cls.SoftwareRegister[software_id]["users"] = []
         cls.SoftwareRegister[software_id]["users"] = [{"user": app["user_id"],
                                             "license": app["license_id"],
                                             "state": app["state"], 
@@ -229,6 +240,7 @@ class FreshService(BaseSettings):
         if cls.settings.VERBOSE:
             print("Expanding applications w/licenses")
         data = cls.__get_paginated_api(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/applications/{software_id}/licenses", "licenses")
+        cls.SoftwareRegister[software_id]["licenses"] = []
         cls.SoftwareRegister[software_id]["licenses"] = [{"license": app["id"], "contract_id": app["contract_id"]} for app in data]
 
 
@@ -236,6 +248,7 @@ class FreshService(BaseSettings):
         if cls.settings.VERBOSE:
             print("Expanding applications w/installations")
         data = cls.__get_paginated_api(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/applications/{software_id}/installations/", "installations")
+        cls.SoftwareRegister[software_id]["installs"] = []
         for app in data:
             asset_info = cls.__get_api(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/assets/{app['installation_machine_id']}?include=type_fields", "asset")
             lcl_description = None
@@ -264,12 +277,21 @@ class FreshService(BaseSettings):
         print(f"Finished expanding: {software_id} {cls.SoftwareRegister[software_id]['name']} - {users}, {installs}, {licenses}")
 
 
-    def expand_software(cls):
+    def expand_software(cls, vendor_id_list:list = [], software_filter:list = []):
         print("Expanding software")
         threads = []
-        for software_id in cls.SoftwareRegister.keys():
-            thread = threading.Thread(target=cls.__expand_software, args=(software_id,))
-            threads.append(thread)
+        for software_id, software in cls.SoftwareRegister.items():
+            if vendor_id_list and software["publisher_id"] not in vendor_id_list:
+                continue
+            if software_filter:
+                for filter in software_filter:
+                    if filter in software["name"]:
+                        thread = threading.Thread(target=cls.__expand_software, args=(software_id,))
+                        threads.append(thread)
+                        break
+            else:
+                thread = threading.Thread(target=cls.__expand_software, args=(software_id,))
+                threads.append(thread)
         started_threads = []
         for thread in threads:
             while threading.active_count() >= 5:
