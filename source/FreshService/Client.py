@@ -334,7 +334,7 @@ class FreshService(BaseSettings):
                     CONTENT_0 = False
                     if software["installs"]:
                         for version in set([install["version"] for install in software["installs"]]):
-                            print(f"\t\t{software['name']} v{version}")
+                            #print(f"\t\t{software['name']} v{version}")
                             CONTENT_1 = False
                             for install in software["installs"]:
                                 if install["version"] != version:
@@ -349,12 +349,12 @@ class FreshService(BaseSettings):
                                     CONTENT_1 = True
                                     temp_string_builder.append(f"- v{version}")
                                 if show_usage:
-                                    print(f"\t\t\tInstalled on {install['user']} @ {install['name']} [Device: {install['status']}]")
+                                    print(f"\t\tv{version} installed on {install['user']} @ {install['name']} [Device: {install['status']}]")
                                 if install['description']:
                                     temp_string_builder.append(f"""\t- Installed: {install['user']} @ {install['name']} [Device: {install['status']}]  
         {install['description']}""")
                                     if show_usage:
-                                        print(f"\t\t\t\t{install['description']}")
+                                        print(f"\t\t\t{install['description']}")
                                 else:
                                     temp_string_builder.append(f"""\t- Installed: {install['user']} @ {install['name']} [Device: {install['status']}]""")
 
