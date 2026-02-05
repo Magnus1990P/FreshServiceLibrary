@@ -274,7 +274,7 @@ class FreshService(BaseSettings):
         users = len(cls.SoftwareRegister[software_id]['users'])
         installs = len(cls.SoftwareRegister[software_id]['installs'])
         licenses = len(cls.SoftwareRegister[software_id]['licenses'])
-        print(f"Finished expanding: {software_id} {cls.SoftwareRegister[software_id]['name']} - {users}, {installs}, {licenses}")
+        print(f"\tFinished expanding: {software_id} {cls.SoftwareRegister[software_id]['name']} - {users}, {installs}, {licenses}")
 
 
     def expand_software(cls, vendor_id_list:list = [], software_filter:list = []):
@@ -334,7 +334,6 @@ class FreshService(BaseSettings):
                     CONTENT_0 = False
                     if software["installs"]:
                         for version in set([install["version"] for install in software["installs"]]):
-                            #print(f"\t\t{software['name']} v{version}")
                             CONTENT_1 = False
                             for install in software["installs"]:
                                 if install["version"] != version:
@@ -349,14 +348,17 @@ class FreshService(BaseSettings):
                                     CONTENT_1 = True
                                     temp_string_builder.append(f"- v{version}")
                                 if show_usage:
-                                    print(f"\t\tv{version} installed on {install['user']} @ {install['name']} [Device: {install['status']}]")
+                                    print(f"\t\tv{version} installed on {install['name']} [User: {install['user']}] [Device state: {install['status']}]")
+                                li = ""
+                                if install['user']:
+                                    li = f"\t- Installed on [{install['name']}](https://support.kulturit.org/cmdb/items/{install['machine']}) \\[User: [{install['user']}](https://support.kulturit.org/users/{install['user']})\\] \\[Device state: {install['status']}\\]"
+                                else:
+                                    li = f"\t- Installed on [{install['name']}](https://support.kulturit.org/cmdb/items/{install['machine']}) \\[User: Unknown\\] \\[Device state: {install['status']}\\]"
                                 if install['description']:
-                                    temp_string_builder.append(f"""\t- Installed: {install['user']} @ {install['name']} [Device: {install['status']}]  
-        {install['description']}""")
+                                    li += f"  \n\t\t{install['description']}"
                                     if show_usage:
                                         print(f"\t\t\t{install['description']}")
-                                else:
-                                    temp_string_builder.append(f"""\t- Installed: {install['user']} @ {install['name']} [Device: {install['status']}]""")
+                                temp_string_builder.append(li)
 
                     
                     for user in software["users"]:
@@ -452,4 +454,33 @@ class FreshService(BaseSettings):
             raise ValueError("Missing ticket content: description")
         
         cls.__create_new_ticket(ticket_object=ticket_object)
+       
+
+    def __create_new_ticket_note(cls, ticket_id:int, note_object:str):
+        resp = post(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/tickets/{ticket_id}/notes", 
+                    headers=cls.FRESH_HEADER, 
+                    json=note_object,
+                    auth=(cls.settings.FRESH_KEY, "X"))
+        if resp.status_code != 201:
+            print(f"Ticket note was not created.\nResponse code {resp.status_code},\nmessage: {resp.json()}")
+        else:
+            response = resp.json()
+            print(f"Note successfully created")
+
+
+    def add_note(cls, ticket_id:int, message: str):
+        note = {
+            "private": True,
+            "body": ""
+        }
+
+        if exists(message) and isfile(message):
+            with open(message) as message_fh:
+                note["body"] = markdown.markdown(message_fh.read().strip())
+        else:
+            note["body"] = markdown.markdown(message.strip())
         
+        if not note["body"].strip():
+            raise ValueError("Missing note content: body")
+        
+        cls.__create_new_ticket_note(ticket_id=ticket_id, note_object=note)
