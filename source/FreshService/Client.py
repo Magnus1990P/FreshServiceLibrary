@@ -202,6 +202,7 @@ class FreshService(BaseSettings):
             
         if update_cache or not cls.SoftwareRegister:
             software_list = cls.__get_paginated_api(f"https://{cls.settings.FRESH_DOMAIN}/api/v2/applications", "applications")
+
             for software in software_list:
                 software["id"] = str(software["id"])
                 software["publisher_id"] = "UNREGISTERED" if not software["publisher_id"] else str(software["publisher_id"])
@@ -314,7 +315,9 @@ class FreshService(BaseSettings):
         
         else:
             if not vendor_id_list:
-                vendor_id_list = cls.VendorRegister.keys()
+                vendor_id_list = [key for key in cls.VendorRegister]
+                print(vendor_id_list)
+                vendor_id_list.sort()
             for vendor_id in vendor_id_list:
                 temp_string_builder = []
                 vendor = cls.VendorRegister[vendor_id]
@@ -322,7 +325,9 @@ class FreshService(BaseSettings):
                     continue
                 print(f"{vendor_id} - {vendor['name']}")
                 temp_string_builder.append(f"## {vendor_id} - {vendor['name']}\n")
-                for software_id in vendor['software']:
+                software_id_keys = vendor['software']
+                software_id_keys.sort()
+                for software_id in software_id_keys:
                     if software_id_list and software_id not in software_id_list:
                         continue
                     software = cls.SoftwareRegister[software_id]
@@ -333,7 +338,9 @@ class FreshService(BaseSettings):
                     print(f"\t{software_id} - {software['name']}")
                     CONTENT_0 = False
                     if software["installs"]:
-                        for version in set([install["version"] for install in software["installs"]]):
+                        version_list = list(set([install["version"] for install in software["installs"]]))
+                        version_list.sort()
+                        for version in version_list:
                             CONTENT_1 = False
                             for install in software["installs"]:
                                 if install["version"] != version:
